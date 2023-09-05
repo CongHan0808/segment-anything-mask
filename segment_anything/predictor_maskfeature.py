@@ -6,6 +6,7 @@
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 
 from segment_anything.modeling import Sam
 
@@ -14,7 +15,7 @@ from typing import Optional, Tuple
 from .utils.transforms import ResizeLongestSide
 
 
-class SamPredictor:
+class SamPredictorMaskFeature(torch.nn.Module):
     def __init__(
         self,
         sam_model: Sam,
@@ -56,7 +57,7 @@ class SamPredictor:
         input_image = self.transform.apply_image(image)
         input_image_torch = torch.as_tensor(input_image, device=self.device)
         input_image_torch = input_image_torch.permute(2, 0, 1).contiguous()[None, :, :, :]
-
+        
         self.set_torch_image(input_image_torch, image.shape[:2])
 
     @torch.no_grad()
@@ -85,9 +86,20 @@ class SamPredictor:
 
         self.original_size = original_image_size
         self.input_size = tuple(transformed_image.shape[-2:])
-        input_image = self.model.preprocess(transformed_image)
+        input_image = self.preprocess_maskfeature(transformed_image)
         self.features = self.model.image_encoder(input_image)
         self.is_image_set = True
+    def preprocess_maskfeature(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize pixel values and pad to a square input."""
+        # Normalize colors
+        x = (x - self.model.pixel_mean) / self.model.pixel_std
+
+        # Pad
+        h, w = x.shape[-2:]
+        padh = self.model.image_encoder.img_size - h
+        padw = self.model.image_encoder.img_size - w
+        x = F.pad(x, (0, padw, 0, padh))
+        return x
 
     def predict(
         self,
@@ -224,9 +236,9 @@ class SamPredictor:
             boxes=boxes,
             masks=mask_input,
         )
-       
+        # import pdb; pdb.set_trace()
         # Predict masks
-        low_res_masks, iou_predictions = self.model.mask_decoder(
+        low_res_masks, iou_predictions, cls_predictions = self.model.mask_decoder(
             image_embeddings=self.features,
             image_pe=self.model.prompt_encoder.get_dense_pe(),
             sparse_prompt_embeddings=sparse_embeddings,
@@ -240,7 +252,7 @@ class SamPredictor:
         if not return_logits:
             masks = masks > self.model.mask_threshold
 
-        return masks, iou_predictions, low_res_masks
+        return masks, iou_predictions, low_res_masks, cls_predictions
 
     def get_image_embedding(self) -> torch.Tensor:
         """

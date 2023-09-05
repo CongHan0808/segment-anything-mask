@@ -9,11 +9,10 @@ import torch
 from torchvision.ops.boxes import batched_nms, box_area  # type: ignore
 
 from typing import Any, Dict, List, Optional, Tuple
-import logging
-import time
 
 from .modeling import Sam
 from .predictor import SamPredictor
+from .predictor_maskfeature import SamPredictorMaskFeature
 from .utils.amg import (
     MaskData,
     area_from_rle,
@@ -32,9 +31,9 @@ from .utils.amg import (
     uncrop_masks,
     uncrop_points,
 )
-from detectron2.utils.logger import log_every_n_seconds
 
-class SamAutomaticMaskGenerator:
+
+class SamAutomaticMaskGeneratorMaskFeature(torch.nn.Module):
     def __init__(
         self,
         model: Sam,
@@ -96,6 +95,7 @@ class SamAutomaticMaskGenerator:
             For large resolutions, 'binary_mask' may consume large amounts of
             memory.
         """
+        super().__init__()
 
         assert (points_per_side is None) != (
             point_grids is None
@@ -122,7 +122,7 @@ class SamAutomaticMaskGenerator:
         if min_mask_region_area > 0:
             import cv2  # type: ignore # noqa: F401
 
-        self.predictor = SamPredictor(model)
+        self.predictor = SamPredictorMaskFeature(model)
         self.points_per_batch = points_per_batch
         self.pred_iou_thresh = pred_iou_thresh
         self.stability_score_thresh = stability_score_thresh
@@ -135,10 +135,7 @@ class SamAutomaticMaskGenerator:
         self.min_mask_region_area = min_mask_region_area
         self.output_mode = output_mode
 
-        self.logger = logging.getLogger(__name__)
-        self.tr = time.time()
-
-    @torch.no_grad()
+    # @torch.no_grad()
     def generate(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """
         Generates masks for the given image.
@@ -165,10 +162,8 @@ class SamAutomaticMaskGenerator:
         """
 
         # Generate masks
-        self.tr = time.time()
+
         mask_data = self._generate_masks(image)
-
-
         # Filter small disconnected regions and holes in masks
         if self.min_mask_region_area > 0:
             mask_data = self.postprocess_small_regions(
@@ -176,7 +171,7 @@ class SamAutomaticMaskGenerator:
                 self.min_mask_region_area,
                 max(self.box_nms_thresh, self.crop_nms_thresh),
             )
-
+        '''
         # Encode masks
         if self.output_mode == "coco_rle":
             mask_data["segmentations"] = [coco_encode_rle(rle) for rle in mask_data["rles"]]
@@ -200,14 +195,15 @@ class SamAutomaticMaskGenerator:
             curr_anns.append(ann)
 
         return curr_anns
+        '''
+        return mask_data
 
     def _generate_masks(self, image: np.ndarray) -> MaskData:
         orig_size = image.shape[:2]
         crop_boxes, layer_idxs = generate_crop_boxes(
             orig_size, self.crop_n_layers, self.crop_overlap_ratio
         )
-        # print(f"genrate crop time: {time.time()-self.tr}")
-        # self.tr = time.time()       
+        # import pdb; pdb.set_trace()
         
         # Iterate over image crops
         data = MaskData()
@@ -228,7 +224,7 @@ class SamAutomaticMaskGenerator:
             )
             data.filter(keep_by_nms)
 
-        data.to_numpy()
+        # data.to_numpy()
         return data
 
     def _process_crop(
@@ -243,8 +239,6 @@ class SamAutomaticMaskGenerator:
         cropped_im = image[y0:y1, x0:x1, :]
         cropped_im_size = cropped_im.shape[:2]
         self.predictor.set_image(cropped_im)
-        # print(f"image encoder: {time.time()-self.tr}")
-        # self.tr = time.time()
 
         # Get points for this crop
         points_scale = np.array(cropped_im_size)[None, ::-1]
@@ -259,18 +253,18 @@ class SamAutomaticMaskGenerator:
         self.predictor.reset_image()
 
         # Remove duplicates within this crop.
-        keep_by_nms = batched_nms(
-            data["boxes"].float(),
-            data["iou_preds"],
-            torch.zeros(len(data["boxes"])),  # categories
-            iou_threshold=self.box_nms_thresh,
-        )
-        data.filter(keep_by_nms)
+        # keep_by_nms = batched_nms(
+        #     data["boxes"].float(),
+        #     data["iou_preds"],
+        #     torch.zeros(len(data["boxes"])),  # categories
+        #     iou_threshold=self.box_nms_thresh,
+        # )
+        # data.filter(keep_by_nms)
 
         # Return to the original image frame
-        data["boxes"] = uncrop_boxes_xyxy(data["boxes"], crop_box)
+        # data["boxes"] = uncrop_boxes_xyxy(data["boxes"], crop_box)
         data["points"] = uncrop_points(data["points"], crop_box)
-        data["crop_boxes"] = torch.tensor([crop_box for _ in range(len(data["rles"]))])
+        # data["crop_boxes"] = torch.tensor([crop_box for _ in range(len(data["rles"]))])
 
         return data
 
@@ -288,22 +282,23 @@ class SamAutomaticMaskGenerator:
         transformed_points = self.predictor.transform.apply_coords(points, im_size)
         in_points = torch.as_tensor(transformed_points, device=self.predictor.device)
         in_labels = torch.ones(in_points.shape[0], dtype=torch.int, device=in_points.device)
-        masks, iou_preds, _= self.predictor.predict_torch(
+        threemaskFlag = False
+        masks, iou_preds, low_res_masks, cls_preds = self.predictor.predict_torch(
             in_points[:, None, :],
             in_labels[:, None],
-            multimask_output=True,
+            multimask_output=threemaskFlag,
             return_logits=True,
         )
-        # print(f"prompt decoder: {time.time()-self.tr}")
-        # self.tr = time.time()
+
         # Serialize predictions and store in MaskData
         data = MaskData(
             masks=masks.flatten(0, 1),
             iou_preds=iou_preds.flatten(0, 1),
             points=torch.as_tensor(points.repeat(masks.shape[1], axis=0)),
+            cls_preds = cls_preds.flatten(0,1),
         )
         del masks
-
+        '''
         # Filter by predicted IoU
         if self.pred_iou_thresh > 0.0:
             keep_mask = data["iou_preds"] > self.pred_iou_thresh
@@ -323,14 +318,12 @@ class SamAutomaticMaskGenerator:
         keep_mask = ~is_box_near_crop_edge(data["boxes"], crop_box, [0, 0, orig_w, orig_h])
         if not torch.all(keep_mask):
             data.filter(keep_mask)
-
+         
         # Compress to RLE
         data["masks"] = uncrop_masks(data["masks"], crop_box, orig_h, orig_w)
         data["rles"] = mask_to_rle_pytorch(data["masks"])
         del data["masks"]
-        # print(f"mask postprocess: {time.time()-self.tr}")
-        # self.tr = time.time()
-
+        '''
         return data
 
     @staticmethod
