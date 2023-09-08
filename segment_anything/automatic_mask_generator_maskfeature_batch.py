@@ -14,7 +14,7 @@ from torch.nn import functional as F
 
 from .modeling import Sam
 from .predictor import SamPredictor
-from .predictor_maskfeature import SamPredictorMaskFeature
+from .predictor_maskfeature_batch import SamPredictorMaskFeatureBatch
 from .utils.amg import (
     MaskData,
     area_from_rle,
@@ -124,7 +124,7 @@ class SamAutomaticMaskGeneratorMaskFeatureBatch(torch.nn.Module):
         if min_mask_region_area > 0:
             import cv2  # type: ignore # noqa: F401
 
-        self.predictor = SamPredictorMaskFeature(model)
+        self.predictor = SamPredictorMaskFeatureBatch(model)
         self.points_per_batch = points_per_batch
         self.pred_iou_thresh = pred_iou_thresh
         self.stability_score_thresh = stability_score_thresh
@@ -325,13 +325,16 @@ class SamAutomaticMaskGeneratorMaskFeatureBatch(torch.nn.Module):
             multimask_output=threemaskFlag,
             return_logits=True,
         )
-
+        # import pdb; pdb.set_trace()
+        BSP = in_points.shape[0]
+        BSI,N, H,W = masks.shape
+        BSI = BSI // BSP
         # Serialize predictions and store in MaskData
         data = MaskData(
-            masks=masks.flatten(0, 1),
-            iou_preds=iou_preds.flatten(0, 1),
+            masks=masks.flatten(0, 1).view(BSI, BSP*N , H, W).permute(1,0,2,3),
+            iou_preds=iou_preds.flatten(0, 1).view(BSI, BSP).permute(1,0),
             points=torch.as_tensor(points.repeat(masks.shape[1], axis=0)),
-            cls_preds = cls_preds.flatten(0,1),
+            cls_preds = cls_preds.flatten(0,1).view(BSI,BSP,-1).permute(1,0,2),
         )
         del masks
         '''

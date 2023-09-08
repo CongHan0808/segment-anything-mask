@@ -14,8 +14,12 @@ from .build_sam import (
 from .build_sam_maskfeature import(
     sam_model_registry_feature,
 )
+from .build_sam_maskfeature_batch import (
+    sam_model_registry_feature_batch
+)
 from .predictor import SamPredictor
 from .predictor_maskfeature import SamPredictorMaskFeature
+from .predictor_maskfeature_batch import SamPredictorMaskFeatureBatch
 from .automatic_mask_generator import SamAutomaticMaskGenerator
 from .automatic_mask_generator_maskfeature import SamAutomaticMaskGeneratorMaskFeature
 from .automatic_mask_generator_maskfeature_batch import SamAutomaticMaskGeneratorMaskFeatureBatch
